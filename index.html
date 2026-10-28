@@ -391,39 +391,12 @@
   ================================================================ */
   const BACKEND_URL = 'https://script.google.com/macros/s/AKfycbwfL_vKHGHotQSgT3WIWUSQFrnSS2IaDzE9ZCI3Nu2tO4Xv_1M2pmo3j9OhiwalcgWgHw/exec';
 
-  /* hasBackend อยู่นอก store เพื่อให้ load/save เรียกได้ */
   const hasBackend = () => !!(BACKEND_URL && BACKEND_URL.startsWith('https://script.google.com'));
 
-  /* ---------- JSONP helper ---------- */
-  function fetchViaJSONP(url, timeout) {
-    return new Promise((resolve, reject) => {
-      const cbName = '_gs_' + Date.now() + '_' + Math.random().toString(36).slice(2);
-      const script = document.createElement('script');
-      const timer  = setTimeout(() => { cleanup(); reject(new Error('timeout')); }, timeout || 8000);
-      function cleanup() {
-        clearTimeout(timer);
-        delete window[cbName];
-        if (script.parentNode) script.parentNode.removeChild(script);
-      }
-      window[cbName] = (data) => { cleanup(); resolve(data); };
-      script.onerror = () => { cleanup(); reject(new Error('script load error')); };
-      script.src = url + '?callback=' + cbName + '&_=' + Date.now();
-      document.head.appendChild(script);
-    });
-  }
+  /* seed data — ถ้า localStorage และ Sheets ว่างเปล่า ใช้ข้อมูลนี้แทน */
+  const SEED_BACKUP = {"project":"แผนงาน Employer Branding","cats":[{"id":"c-social","name":"โซเชียลคอนเทนต์ (Organic)","hex":"#2563eb"},{"id":"c-ads","name":"Ads & Performance","hex":"#c2255c"},{"id":"c-ta","name":"สื่อสารรับสมัครงาน (TA)","hex":"#7a4fd6"},{"id":"c-data","name":"Dashboard & Data","hex":"#0f7d86"},{"id":"c-hr","name":"HR Analytics","hex":"#a4740a"},{"id":"c-event","name":"กิจกรรม / อีเวนต์","hex":"#d1600e"}],"tasks":[{"id":"kmucmhm5wohtg","name":"สรุปผล Ads เทียบ Facebook / TikTok","cat":"c-ads","pic":"Non","status":"review","due":"2026-09-14","prio":"high","note":"","subs":[{"id":"smucmhm5wt8tm","name":"ดึงข้อมูล Facebook Ads จาก Supermetrics","done":true},{"id":"smucmhm5wgdhe","name":"ดึงข้อมูล TikTok Ads","done":true},{"id":"smucmhm5wepmn","name":"เทียบ CPC / CTR / CPM (THB)","done":false},{"id":"smucmhm5wibn4","name":"เขียนสรุป insight ส่งหัวหน้า","done":false}],"open":true},{"id":"kmucmhm5wb1cw","name":"อัปเดต dashboard ผลงาน social รายเดือน","cat":"c-data","pic":"Non","status":"doing","due":"2026-09-18","prio":"high","note":"ตรวจตัวเลข LinkedIn ให้ตรงกับ native ก่อนส่ง","subs":[{"id":"smucmhm5wy3ru","name":"Refresh Supermetrics ทุก data source","done":true},{"id":"smucmhm5wl9i5","name":"ตรวจ LinkedIn follower vs native","done":false},{"id":"smucmhm5wvjfg","name":"อัปเดตกราฟใน Looker Studio","done":false},{"id":"smucmhm5wcgt8","name":"ส่งลิงก์ให้ทีม EB / TA","done":false}],"open":false},{"id":"kmucmhm5wwwvo","name":"เขียนโพสต์รับสมัครงาน Hot Job","cat":"c-ta","pic":"EB Team","status":"todo","due":"2026-09-21","prio":"mid","note":"ใช้ฟอร์แมตเดิม 3 หน้าที่ / 3-4 คุณสมบัติ","subs":[{"id":"smucmhm5wbl97","name":"รวบรวมตำแหน่งที่เปิดจาก TA","done":false},{"id":"smucmhm5wqdx7","name":"ร่างแคปชัน 3 หน้าที่ / 3-4 คุณสมบัติ","done":false},{"id":"smucmhm5w05l6","name":"ขอภาพจากทีมดีไซน์","done":false},{"id":"smucmhm5wks9x","name":"ลงตารางคอนเทนต์","done":false}],"open":false},{"id":"kmucmhm5wg819","name":"วางแผนคอนเทนต์ไตรมาสหน้า","cat":"c-social","pic":"TA Team","status":"todo","due":"2026-09-29","prio":"mid","note":"","subs":[{"id":"smucmhm5wat9o","name":"สรุปผลคอนเทนต์ไตรมาสนี้","done":false},{"id":"smucmhm5wfxsk","name":"เลือก content pillar ที่จะเน้น","done":false},{"id":"smucmhm5wio5d","name":"ร่างปฏิทิน 12 สัปดาห์","done":false}],"open":false}],"updated":"2026-09-22T12:01:04.668Z"};
 
-  /* ---------- POST helper: sendBeacon (ไม่ติด CORS จาก file://) ---------- */
-  function postViaBeacon(url, payload) {
-    try {
-      const blob = new Blob([payload], { type: 'text/plain' });
-      const ok   = navigator.sendBeacon(url, blob);
-      return Promise.resolve(ok);
-    } catch(e) {
-      return Promise.resolve(false);
-    }
-  }
-
-  /* ---------- store ---------- */
+  /* ---------- store: fetch (ทำงานบน https://) + localStorage fallback ---------- */
   const store = (() => {
     let memCache = null, lastFetch = 0;
     const CACHE_MS = 5000;
@@ -433,15 +406,17 @@
           try {
             const now = Date.now();
             if (memCache && (now - lastFetch) < CACHE_MS) return memCache;
-            const data = await fetchViaJSONP(BACKEND_URL);
+            const resp = await fetch(BACKEND_URL, { cache: 'no-store' });
+            if (!resp.ok) throw new Error('HTTP ' + resp.status);
+            const text = await resp.text();
+            const data = JSON.parse(text);
             if (data && data.tasks) {
-              memCache = JSON.stringify(data);
-              lastFetch = Date.now();
-              return memCache;
+              memCache = text; lastFetch = Date.now();
+              return text;
             }
             return null;
           } catch(e) {
-            console.warn('[store.get] JSONP failed, fallback localStorage:', e.message);
+            console.warn('[store.get] fetch failed, fallback localStorage:', e.message);
           }
         }
         try { return localStorage.getItem(k); } catch(e) { return null; }
@@ -450,7 +425,13 @@
         memCache = v; lastFetch = Date.now();
         try { localStorage.setItem(k, v); } catch(e) {}
         if (hasBackend()) {
-          await postViaBeacon(BACKEND_URL, v);
+          try {
+            const form = new FormData();
+            form.append('payload', v);
+            await fetch(BACKEND_URL, { method: 'POST', body: form });
+          } catch(e) {
+            console.warn('[store.set] POST failed:', e.message);
+          }
         }
         return true;
       }
@@ -467,6 +448,11 @@
       v = raw ? JSON.parse(raw) : null;
     }catch(e){ v = null; }
 
+    if(!v && SEED_BACKUP && Array.isArray(SEED_BACKUP.tasks)){
+      // ใช้ backup data เป็น fallback
+      v = SEED_BACKUP;
+      console.log('[load] using embedded backup data');
+    }
     if(v && Array.isArray(v.tasks)){
       state = v;
       if(!Array.isArray(state.cats) || !state.cats.length) state.cats = SEED_CATS.slice();
